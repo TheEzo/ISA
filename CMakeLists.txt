@@ -58,19 +58,6 @@ mark_as_advanced(
 )
 
 
-set(SOURCE_FILES main.cpp)
+set(SOURCE_FILES dns-export.cpp)
 add_executable(ISA ${SOURCE_FILES})
 target_link_libraries(ISA ${PCAP_LIBRARY})
-
-
-#
-#SET(GCC_COVERAGE_LINK_FLAGS    "-lpcap")
-#
-#
-#
-#include(FindPCAP)
-#find_package(PCAP)
-#
-#set(SOURCE_FILES main.c)
-#add_executable(PKS1 ${SOURCE_FILES})
-#target_link_libraries(PKS1 ${usr/include})
