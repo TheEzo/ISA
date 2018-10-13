@@ -58,22 +58,19 @@ struct ANSWER{
 int main(int argc, char **argv) {
     vector<string> msg;
     pcap_t *handle;
-    u_int size_ip;
-    u_int size_user_datagram_protocol;
+    u_int size_ip, size_user_datagram_protocol;
     struct ip *my_ip;
     char errbuf[PCAP_ERRBUF_SIZE];
-    const struct tcphdr *my_tcp;    // pointer to the beginning of TCP header
-    const struct udphdr *my_udp;    // pointer to the beginning of UDP header
     struct pcap_pkthdr header;
     struct ether_header *eptr;
-    std::string r, i, s;
-    int t = 60;
+    string r, i, s;
+    int t = 60, c;
     const u_char *packet;
-    bool pr = false, pi = false, ps = false, pt = false;
-    int c;
-
+    bool pr = false, pi = false, ps = false;
     struct DNS_MESSAGE *record = nullptr;
     struct ANSWER *answer = nullptr;
+
+    struct bpf_program bpf;
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
         switch (c) {
@@ -90,16 +87,51 @@ int main(int argc, char **argv) {
                 s = optarg;
                 break;
             case 't':
-                pt = true;
-                t = stoi(optarg);
+                t = atoi(optarg);
                 break;
             case '?':
             default:
                 cerr << "Unknown parameter" << endl;
                 return 1;
         }
+    if (pi){
+        /* tutorial from http://www.tcpdump.org/pcap.html */
+        struct bpf_program fp;
+        char filter_exp[] = "udp port 53";
+        bpf_u_int32 mask;
+        bpf_u_int32 net;
 
-    if (pr) {
+        if (pcap_lookupnet(i.c_str(), &net, &mask, errbuf) == -1) {
+            fprintf(stderr, "Can't get netmask for device %s\n", i.c_str());
+            net = 0;
+            mask = 0;
+        }
+        handle = pcap_open_live(i.c_str(), BUFSIZ, 1, 1000, errbuf);
+        if (handle == NULL) {
+            fprintf(stderr, "Couldn't open device %s: %s\n", i.c_str(), errbuf);
+            return(2);
+        }
+        if (pcap_datalink(handle) != DLT_EN10MB) {
+            fprintf(stderr, "Device %s doesn't provide Ethernet headers - not supported\n", i.c_str());
+            return(2);
+        }
+
+        if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
+            fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(handle));
+            return(2);
+        }
+        if (pcap_setfilter(handle, &fp) == -1) {
+            fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
+            return(2);
+        }
+        /* Grab a packet */
+        packet = pcap_next(handle, &header);
+        /* Print its length */
+        printf("Jacked a packet with length of [%d]\n", header.len);
+        /* And close the session */
+        pcap_close(handle);
+    }
+    else if (pr) {
         handle = pcap_open_offline(r.c_str(), errbuf);
 
         while ((packet = pcap_next(handle, &header)) != NULL) {
@@ -109,15 +141,8 @@ int main(int argc, char **argv) {
                     my_ip = (struct ip *) (packet + SIZE_ETHERNET);
                     size_ip = my_ip->ip_hl * 4;
                     switch (my_ip->ip_p) {
-                        case 2: // IGMP protocol
-                            continue;
-                        case 6: // TCP protocol
-                            my_tcp = (struct tcphdr *) (packet + SIZE_ETHERNET + size_ip); // pointer to the TCP header
-                            size_user_datagram_protocol = sizeof(struct tcphdr);
-                            break;
                         case 17: // UDP protocol
-                            my_udp = (struct udphdr *) (packet + SIZE_ETHERNET + size_ip); // pointer to the UDP header
-                            size_user_datagram_protocol = sizeof(*my_udp);
+                            size_user_datagram_protocol = sizeof(struct udphdr);
                             break;
                         default: // unknown protocol
                             continue;
@@ -139,9 +164,10 @@ int main(int argc, char **argv) {
                         ans_name += ' ' + get_type(ntohs(answer->type));
                         switch(ntohs(answer->type)){
                             case 1:
+                                ans_name += ' ';
                                 for(int i = 0; i < 4; i++){
                                     unsigned char a = *(packet + index + i);
-                                    ans_name += ' ' + to_string((int)a) + '.';
+                                    ans_name += to_string((int)a) + '.';
                                 }
                                 ans_name = ans_name.substr(0, ans_name.size()-1);
                                 break;
