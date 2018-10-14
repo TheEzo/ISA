@@ -6,18 +6,33 @@
 #include <sstream>
 #include <vector>
 #include <netinet/ip.h>
+#include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <netinet/if_ether.h>
-
+#include <netinet/ether.h>
+#include <time.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <ctime>
+#include <signal.h>
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
 using namespace std;
 
-string get_name(const u_char *);
+string get_name(const u_char *, int);
+
 string get_type(unsigned short);
+
 string get_ipv6(const u_char *);
+
+string read_response(const u_char *);
+
+void sigusr1_handler(int);
+
+void mypcap_handler(u_char *, const struct pcap_pkthdr *, const u_char *);
 
 struct DNS_MESSAGE {
     short id; // identification // short is 2 bytes long
@@ -43,34 +58,31 @@ struct DNS_MESSAGE {
     unsigned short additional_count;
 };
 
-struct QUESTION{
+struct QUESTION {
     unsigned short type;
     unsigned short cls;
 };
 
-struct ANSWER{
+struct ANSWER {
     unsigned short type;
     unsigned short cls;
     unsigned int ttl;
     unsigned short rdlength;
 };
 
+vector<string> msg;
+
 int main(int argc, char **argv) {
-    vector<string> msg;
     pcap_t *handle;
     u_int size_ip, size_user_datagram_protocol;
     struct ip *my_ip;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
     struct ether_header *eptr;
-    string r, i, s;
+    string r, i, s, tmp;
     int t = 60, c;
     const u_char *packet;
     bool pr = false, pi = false, ps = false;
-    struct DNS_MESSAGE *record = nullptr;
-    struct ANSWER *answer = nullptr;
-
-    struct bpf_program bpf;
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
         switch (c) {
@@ -94,7 +106,10 @@ int main(int argc, char **argv) {
                 cerr << "Unknown parameter" << endl;
                 return 1;
         }
-    if (pi){
+
+    signal(SIGUSR1, sigusr1_handler);
+
+    if (pi) {
         /* tutorial from http://www.tcpdump.org/pcap.html */
         struct bpf_program fp;
         char filter_exp[] = "udp port 53";
@@ -102,105 +117,126 @@ int main(int argc, char **argv) {
         bpf_u_int32 net;
 
         if (pcap_lookupnet(i.c_str(), &net, &mask, errbuf) == -1) {
-            fprintf(stderr, "Can't get netmask for device %s\n", i.c_str());
-            net = 0;
-            mask = 0;
+            cerr << "Can't get netmask for device " << i.c_str() << endl;
+            return 1;
         }
-        handle = pcap_open_live(i.c_str(), BUFSIZ, 1, 1000, errbuf);
+        handle = pcap_open_live(i.c_str(), BUFSIZ, 0, t, errbuf);
         if (handle == NULL) {
-            fprintf(stderr, "Couldn't open device %s: %s\n", i.c_str(), errbuf);
-            return(2);
-        }
-        if (pcap_datalink(handle) != DLT_EN10MB) {
-            fprintf(stderr, "Device %s doesn't provide Ethernet headers - not supported\n", i.c_str());
-            return(2);
+            cerr << "Couldn't open device " << i.c_str() << ": " << errbuf << endl;
+            return (2);
         }
 
         if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
-            fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(handle));
-            return(2);
+            cerr << "Couldn't parse filter " << filter_exp << ": " << pcap_geterr(handle) << endl;
+            return (2);
         }
         if (pcap_setfilter(handle, &fp) == -1) {
-            fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
-            return(2);
+            cerr << "Couldn't install filter " << filter_exp << ": " << pcap_geterr(handle) << endl;
+            return (2);
         }
-        /* Grab a packet */
-        packet = pcap_next(handle, &header);
-        /* Print its length */
-        printf("Jacked a packet with length of [%d]\n", header.len);
-        /* And close the session */
+
+        if (pcap_loop(handle, -1, mypcap_handler, NULL) == -1) {
+            cerr << "pcap_loop() failed" << endl;
+            return 1;
+        }
+
+        // close the capture device and deallocate resources
         pcap_close(handle);
-    }
-    else if (pr) {
+    } else if (pr) {
         handle = pcap_open_offline(r.c_str(), errbuf);
 
         while ((packet = pcap_next(handle, &header)) != NULL) {
-            eptr = (struct ether_header *) packet;
-            switch (ntohs(eptr->ether_type)) {
-                case ETHERTYPE_IP: // IPv4 packet
-                    my_ip = (struct ip *) (packet + SIZE_ETHERNET);
-                    size_ip = my_ip->ip_hl * 4;
-                    switch (my_ip->ip_p) {
-                        case 17: // UDP protocol
-                            size_user_datagram_protocol = sizeof(struct udphdr);
-                            break;
-                        default: // unknown protocol
-                            continue;
-                    }
-                    record = (struct DNS_MESSAGE *) (packet + SIZE_ETHERNET + size_ip + size_user_datagram_protocol);
-
-                    if (ntohs(record->answer_count) > 0) {
-                        size_t index = SIZE_ETHERNET + size_ip + size_user_datagram_protocol + sizeof(struct DNS_MESSAGE);
-                        string name = get_name(packet + index);
-                        index += name.length() + 2;
-                        index += sizeof(struct QUESTION);
-
-                        string ans_name = get_name(packet + index);
-                        index += ans_name.length() ? ans_name.length() : 2;
-                        ans_name = ans_name.length() ? ans_name : name;
-
-                        answer = (struct ANSWER *) (packet + index);
-                        index += sizeof(struct ANSWER) - 2;
-                        ans_name += ' ' + get_type(ntohs(answer->type));
-                        switch(ntohs(answer->type)){
-                            case 1:
-                                ans_name += ' ';
-                                for(int i = 0; i < 4; i++){
-                                    unsigned char a = *(packet + index + i);
-                                    ans_name += to_string((int)a) + '.';
-                                }
-                                ans_name = ans_name.substr(0, ans_name.size()-1);
-                                break;
-                            case 28:
-                                ans_name +=  ' ' + get_ipv6(packet + index);
-                                break;
-                            default:
-                                break;
-                        }
-                        msg.push_back(ans_name);
-                    }
-                    break;
-
-                default:
-                    break;
-            }
+            tmp = read_response(packet);
+            if (tmp.size())
+                msg.push_back(tmp);
         }
     }
-    if (ps){
 
-    }
-    else{
-        for(auto record: msg)
+    if (ps) {
+
+    } else {
+        for (auto record: msg)
             cout << record << endl;
     }
 
     return 0;
 }
 
-string get_type(unsigned short num){
-    switch(num){
+string read_response(const u_char *packet) {
+    struct ip *my_ip;
+    struct ether_header *eptr = (struct ether_header *) packet;
+    struct ANSWER *answer;
+    struct DNS_MESSAGE *dns;
+
+    u_int size_ip, size_user_datagram_protocol, dns_pos;
+
+    switch (ntohs(eptr->ether_type)) {
+        case ETHERTYPE_IP: // IPv4 packet
+            my_ip = (struct ip *) (packet + SIZE_ETHERNET);
+            size_ip = my_ip->ip_hl * 4;
+            switch (my_ip->ip_p) {
+                case 17: // UDP protocol
+                    size_user_datagram_protocol = sizeof(struct udphdr);
+                    break;
+                default: // unknown protocol
+                    return "";
+            }
+            dns_pos = SIZE_ETHERNET + size_ip + size_user_datagram_protocol;
+            size_ip = dns_pos; // size_ip is beginning of DNS struct now
+            dns = (struct DNS_MESSAGE *) (packet + dns_pos);
+
+            if (ntohs(dns->answer_count) > 0) {
+                dns_pos += sizeof(struct DNS_MESSAGE);
+                string name = get_name(packet + dns_pos, 0);
+                dns_pos += name.length() + 2 + sizeof(struct QUESTION);
+
+                string ans_name = get_name(packet + dns_pos, 0);
+                dns_pos += ans_name.length() ? ans_name.length() : 2;
+                ans_name = ans_name.length() ? ans_name : name;
+
+                answer = (struct ANSWER *) (packet + dns_pos);
+                dns_pos += sizeof(struct ANSWER) - 2;
+                ans_name += ' ' + get_type(ntohs(answer->type));
+                switch (ntohs(answer->type)) {
+                    case 1: // a
+                        ans_name += ' ';
+                        for (int i = 0; i < 4; i++) {
+                            unsigned char a = *(packet + dns_pos + i);
+                            ans_name += to_string((int) a) + '.';
+                        }
+                        ans_name = ans_name.substr(0, ans_name.size() - 1);
+                        break;
+                    case 5: // cname
+                        ans_name += ' ' + get_name(packet + dns_pos, size_ip);
+                        break;
+                    case 28: // aaaa
+                        ans_name += ' ' + get_ipv6(packet + dns_pos);
+                        break;
+                    default:
+                        break;
+                }
+                return ans_name;
+            }
+            break;
+        default:
+            return "";
+    }
+
+    return "";
+}
+
+void mypcap_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
+    string tmp = read_response(packet);
+    if (tmp.size())
+        msg.push_back(tmp);
+}
+
+string get_type(unsigned short num) {
+    switch (num) {
         case 1:
             return "A";
+        case 5:
+            return "CNAME";
         case 28:
             return "AAAA";
         default:
@@ -208,37 +244,53 @@ string get_type(unsigned short num){
     }
 }
 
-string get_ipv6(const u_char * packet){
+string get_ipv6(const u_char *packet) {
     string result;
     bool pair = false;
-    for(int i = 0; i < 16; i++){
+    for (int i = 0; i < 16; i++) {
         string tmp;
         stringstream s;
-        s << hex << (int)*packet++;
+        s << hex << (int) *packet++;
         s >> tmp;
+        while(tmp.size() < 2)
+            tmp = "0" + tmp;
         result += tmp;
-        if(i % 2){
-            pair = true;
+        if (i % 2)
             result += ":";
-        }
-        else
-            pair = false;
     }
-    return result.substr(0, result.size()-1);
+
+    return result.substr(0, result.size() - 1);
 }
 
-string get_name(const u_char *packet){
-    // detect c0 0c
-    if ((int)*packet == 192 && *(packet + 1) == 12)
+string get_name(const u_char *packet, int prev) {
+    if ((int) *packet == 192 && *(packet + 1) == 12) // c0 0c
         return "";
+    bool jump = !prev;
     string res = "";
-    while(true){
-        int len = (int)*packet++;
-        for(int i = 0; i < len; i++){
+    const u_char *start = packet;
+    while (true) {
+        int len = (int) *packet++;
+        for (int i = 0; i < len; i++) {
+            if (*packet == '\0')
+                return res.substr(0, res.size() - 1);
             res += *packet++;
+        }
+        if((int)*packet>=192 && !jump){ // c0 ..
+            // offset from https://gist.github.com/fffaraz/9d9170b57791c28ccda9255b48315168
+            int offset = (*packet)*256 + *(packet+1) - 49152; //49152 = 11000000 00000000
+            packet = start - prev + offset - 2;
+            jump = true;
         }
         res += ".";
         if (*packet == '\0')
-            return res.substr(0, res.size()-1);
+            return res.substr(0, res.size() - 1);
+    }
+}
+
+void sigusr1_handler(int signum){
+    if (signum == SIGUSR1){
+        for(auto text: msg)
+            cout << text << endl;
+        exit(0);
     }
 }
