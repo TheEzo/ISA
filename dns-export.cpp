@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <syslog.h>
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
@@ -109,24 +110,27 @@ int main(int argc, char **argv) {
                 i = optarg;
                 break;
             case 's': // setup connection to syslog server on -s
-                if ((server = gethostbyname(optarg)) == nullptr){
-                    cerr << "Unknown syslog server" << endl;
-                    return 1;
-                }
-                memset(&serv_addr, '0', sizeof(serv_addr));
-                serv_addr.sin_family = AF_INET;
-                bcopy(server->h_addr_list[0], (char *)&serv_addr.sin_addr.s_addr, server->h_length);
-                serv_addr.sin_port = htons(514);
-                if ((socketfd = socket(AF_INET, SOCK_STREAM, 0)) <= 0){
-                    cerr << "Socket creating failed" << endl;
-                    return 1;
-                }
-                if(connect(socketfd, (const struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0){
-                    cerr << "Connecting failed" << endl;
-                    return 1;
-                }
-                send(socketfd, buffer, strlen(buffer), 0);
-                close(socketfd);
+//                if ((server = gethostbyname(optarg)) == nullptr){
+//                    cerr << "Unknown syslog server" << endl;
+//                    return 1;
+//                }
+//                memset(&serv_addr, '0', sizeof(serv_addr));
+//                serv_addr.sin_family = AF_INET;
+//                serv_addr.sin_addr.s_addr = inet_addr("192.168.2.2");
+//                serv_addr.sin_port = htons(514);
+//                if ((socketfd = socket(AF_INET, SOCK_STREAM, 0)) <= 0){
+//                    cerr << "Socket creating failed" << endl;
+//                    return 1;
+//                }
+//                if(connect(socketfd, (const struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0){
+//                    cerr << "Connecting failed" << endl;
+//                    return 1;
+//                }
+//                send(socketfd, buffer, strlen(buffer), 0);
+//                close(socketfd);
+                openlog("dns-export", LOG_PID, LOG_LOCAL0);
+                syslog(LOG_INFO, "test log msg");
+                exit(0);
                 ps = true;
                 break;
             case 't':
