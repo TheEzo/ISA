@@ -2,7 +2,6 @@
 #include <unistd.h>
 #include <iostream>
 #include <pcap.h>
-#include <pcap/pcap.h>
 #include <sstream>
 #include <vector>
 #include <netinet/ip.h>
@@ -11,22 +10,22 @@
 #include <netinet/udp.h>
 #include <netinet/if_ether.h>
 #include <netinet/ether.h>
-#include <time.h>
-#include <stdlib.h>
-#include <errno.h>
+#include <cstdlib>
+#include <cerrno>
 #include <arpa/inet.h>
 #include <ctime>
 #include <signal.h>
 #include <netdb.h>
 #include <cstring>
-
+#include <map>
+#include <algorithm>
 
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <syslog.h>
-
+#include <unistd.h>
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
@@ -40,9 +39,11 @@ string get_ipv6(const u_char *);
 
 string read_response(const u_char *);
 
-void sigusr1_handler(int);
+void sigusr_handler(int);
 
 void mypcap_handler(u_char *, const struct pcap_pkthdr *, const u_char *);
+
+void insert_message(string);
 
 struct DNS_MESSAGE {
     short id; // identification // short is 2 bytes long
@@ -80,22 +81,25 @@ struct ANSWER {
     unsigned short rdlength;
 };
 
-vector<string> msg;
+map<string, int> records;
+map<string, int>::iterator it;
+char buffer[1025];
+struct sockaddr_in serv_addr;
+int socketfd;
 
 int main(int argc, char **argv) {
     pcap_t *handle;
-    struct ip *my_ip;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
     struct ether_header *eptr;
     string r, i, tmp;
-    int t = 60, c, socketfd;
+    int t = 60, c;
     const u_char *packet;
-    bool pr = false, pi = false, ps = false;
-    struct sockaddr_in serv_addr;
+    bool pr = false, pi = false, ps = false, pt = false;
+
     struct hostent *server;
-    char buffer[1025];
-    strcpy(buffer, "test message");
+
+    pid_t pid;
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
         switch (c) {
@@ -106,6 +110,8 @@ int main(int argc, char **argv) {
             case 'i':
                 pi = true;
                 i = optarg;
+                signal(SIGUSR1, sigusr_handler); // TODO check signal
+                signal(SIGUSR2, sigusr_handler);
                 break;
             case 's': // setup connection to syslog server on -s
                 if ((server = gethostbyname(optarg)) == nullptr) {
@@ -114,8 +120,8 @@ int main(int argc, char **argv) {
                 }
                 memset(&serv_addr, '0', sizeof(serv_addr));
                 serv_addr.sin_family = AF_INET;
-//                bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr, (size_t)server->h_length);
-                serv_addr.sin_addr.s_addr = inet_addr("192.168.56.102");
+                bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr, (size_t)server->h_length);
+//                serv_addr.sin_addr.s_addr = inet_addr("192.168.56.102");
                 serv_addr.sin_port = htons(514);
                 if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) <= 0) {
                     cerr << "Socket creating failed" << endl;
@@ -125,6 +131,7 @@ int main(int argc, char **argv) {
                 break;
             case 't':
                 t = atoi(optarg);
+                pt = true;
                 break;
             case '?':
             default:
@@ -132,7 +139,19 @@ int main(int argc, char **argv) {
                 return 1;
         }
 
-    signal(SIGUSR1, sigusr1_handler);
+    // it param -t used, run child process that kill parent after specified time
+    if (pt){
+        pid = fork();
+        if (pid == 0) { // child generator
+            sleep(t);
+            kill(getppid(), SIGUSR2);
+            exit(0);
+        }
+        else {
+
+        }
+
+    }
 
     if (pi) {
         /* tutorial from http://www.tcpdump.org/pcap.html */
@@ -173,16 +192,16 @@ int main(int argc, char **argv) {
         while ((packet = pcap_next(handle, &header)) != NULL) {
             tmp = read_response(packet);
             if (tmp.size())
-                msg.push_back(tmp);
+                insert_message(tmp);
         }
     }
 
-    for (auto &record: msg) {
+    for (it = records.begin(); it != records.end(); it++) {
         if (ps) {
-            strcpy(buffer, record.c_str());
+            strcpy(buffer, (it->first + " " + to_string(it->second)).c_str());
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr_in));
         } else {
-            cout << record << endl;
+            cout << it->first << " " << it->second << endl;
         }
     }
 
@@ -239,8 +258,13 @@ string read_response(const u_char *packet) {
                     case 28: // aaaa
                         ans_name += ' ' + get_ipv6(packet + dns_pos);
                         break;
+                    case 2: // ns
+                    case 6: // soa
+                    case 15: // mx
+                    case 16: // txt
+                    case 99: // spf
                     default:
-                        break;
+                        return "";
                 }
                 return ans_name;
             }
@@ -255,19 +279,29 @@ string read_response(const u_char *packet) {
 void mypcap_handler(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
     string tmp = read_response(packet);
     if (tmp.size())
-        msg.push_back(tmp);
+        insert_message(tmp);
 }
 
 string get_type(unsigned short num) {
     switch (num) {
         case 1:
             return "A";
+        case 2:
+            return "NS";
         case 5:
             return "CNAME";
+        case 6:
+            return "SOA";
+        case 15:
+            return "MX";
+        case 16:
+            return "TXT";
         case 28:
             return "AAAA";
+        case 99:
+            return "SPF";
         default:
-            return "UNDEFINED";
+            return "UNDEFINED_" + to_string(num);
     }
 }
 
@@ -314,10 +348,27 @@ string get_name(const u_char *packet, int prev) {
     }
 }
 
-void sigusr1_handler(int signum) {
+void sigusr_handler(int signum) {
     if (signum == SIGUSR1) {
-        for (auto text: msg)
-            cout << text << endl;
+        for (it = records.begin(); it != records.end(); it++) {
+            cout << it->first << " " << it->second << endl;
+        }
         exit(0);
     }
+    if (signum == SIGUSR2) {
+        for (it = records.begin(); it != records.end(); it++) {
+            strcpy(buffer, (it->first + " " + to_string(it->second)).c_str());
+            sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr_in));
+        }
+        exit(0);
+    }
+}
+
+void insert_message(string msg){
+    it = records.find(msg);
+    if (it == records.end()){
+        records.insert({msg, 1});
+    }
+    else
+        it->second++;
 }
