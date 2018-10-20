@@ -17,6 +17,17 @@
 #include <arpa/inet.h>
 #include <ctime>
 #include <signal.h>
+#include <netdb.h>
+#include <cstring>
+
+
+#include <sys/socket.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <netinet/in.h>
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
@@ -74,15 +85,18 @@ vector<string> msg;
 
 int main(int argc, char **argv) {
     pcap_t *handle;
-    u_int size_ip, size_user_datagram_protocol;
     struct ip *my_ip;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
     struct ether_header *eptr;
-    string r, i, s, tmp;
-    int t = 60, c;
+        string r, i, tmp;
+    int t = 60, c, socketfd;
     const u_char *packet;
     bool pr = false, pi = false, ps = false;
+    struct sockaddr_in serv_addr;
+    hostent *server;
+    char buffer[1025];
+    strcpy(buffer,  "testovaci zprava");
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
         switch (c) {
@@ -94,9 +108,26 @@ int main(int argc, char **argv) {
                 pi = true;
                 i = optarg;
                 break;
-            case 's':
+            case 's': // setup connection to syslog server on -s
+                if ((server = gethostbyname(optarg)) == nullptr){
+                    cerr << "Unknown syslog server" << endl;
+                    return 1;
+                }
+                memset(&serv_addr, '0', sizeof(serv_addr));
+                serv_addr.sin_family = AF_INET;
+                bcopy(server->h_addr_list[0], (char *)&serv_addr.sin_addr.s_addr, server->h_length);
+                serv_addr.sin_port = htons(514);
+                if ((socketfd = socket(AF_INET, SOCK_STREAM, 0)) <= 0){
+                    cerr << "Socket creating failed" << endl;
+                    return 1;
+                }
+                if(connect(socketfd, (const struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0){
+                    cerr << "Connecting failed" << endl;
+                    return 1;
+                }
+                send(socketfd, buffer, strlen(buffer), 0);
+                close(socketfd);
                 ps = true;
-                s = optarg;
                 break;
             case 't':
                 t = atoi(optarg);
