@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
 //                }
 //                send(socketfd, buffer, strlen(buffer), 0);
 //                close(socketfd);
-                openlog("dns-export", LOG_PID, LOG_LOCAL0);
+                openlog("dns-export", LOG_PID, inet_addr("192.168.2.2"));
                 syslog(LOG_INFO, "test log msg");
                 exit(0);
                 ps = true;
