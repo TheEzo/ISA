@@ -22,13 +22,11 @@
 
 
 #include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <syslog.h>
+
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
@@ -90,14 +88,14 @@ int main(int argc, char **argv) {
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
     struct ether_header *eptr;
-        string r, i, tmp;
+    string r, i, tmp;
     int t = 60, c, socketfd;
     const u_char *packet;
     bool pr = false, pi = false, ps = false;
     struct sockaddr_in serv_addr;
-    hostent *server;
+    struct hostent *server;
     char buffer[1025];
-    strcpy(buffer,  "testovaci zprava");
+    strcpy(buffer, "test message");
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
         switch (c) {
@@ -110,27 +108,19 @@ int main(int argc, char **argv) {
                 i = optarg;
                 break;
             case 's': // setup connection to syslog server on -s
-//                if ((server = gethostbyname(optarg)) == nullptr){
-//                    cerr << "Unknown syslog server" << endl;
-//                    return 1;
-//                }
-//                memset(&serv_addr, '0', sizeof(serv_addr));
-//                serv_addr.sin_family = AF_INET;
-//                serv_addr.sin_addr.s_addr = inet_addr("192.168.2.2");
-//                serv_addr.sin_port = htons(514);
-//                if ((socketfd = socket(AF_INET, SOCK_STREAM, 0)) <= 0){
-//                    cerr << "Socket creating failed" << endl;
-//                    return 1;
-//                }
-//                if(connect(socketfd, (const struct sockaddr *) &serv_addr, sizeof(serv_addr)) != 0){
-//                    cerr << "Connecting failed" << endl;
-//                    return 1;
-//                }
-//                send(socketfd, buffer, strlen(buffer), 0);
-//                close(socketfd);
-                openlog("dns-export", LOG_PID, inet_addr("192.168.2.2"));
-                syslog(LOG_INFO, "test log msg");
-                exit(0);
+                if ((server = gethostbyname(optarg)) == nullptr) {
+                    cerr << "Unknown syslog server" << endl;
+                    return 1;
+                }
+                memset(&serv_addr, '0', sizeof(serv_addr));
+                serv_addr.sin_family = AF_INET;
+//                bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr, (size_t)server->h_length);
+                serv_addr.sin_addr.s_addr = inet_addr("192.168.56.102");
+                serv_addr.sin_port = htons(514);
+                if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) <= 0) {
+                    cerr << "Socket creating failed" << endl;
+                    return 1;
+                }
                 ps = true;
                 break;
             case 't':
@@ -187,11 +177,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (ps) {
-
-    } else {
-        for (auto record: msg)
+    for (auto &record: msg) {
+        if (ps) {
+            strcpy(buffer, record.c_str());
+            sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *)&serv_addr, sizeof(struct sockaddr_in));
+        } else {
             cout << record << endl;
+        }
     }
 
     return 0;
@@ -287,7 +279,7 @@ string get_ipv6(const u_char *packet) {
         stringstream s;
         s << hex << (int) *packet++;
         s >> tmp;
-        while(tmp.size() < 2)
+        while (tmp.size() < 2)
             tmp = "0" + tmp;
         result += tmp;
         if (i % 2)
@@ -310,9 +302,9 @@ string get_name(const u_char *packet, int prev) {
                 return res.substr(0, res.size() - 1);
             res += *packet++;
         }
-        if((int)*packet>=192 && !jump){ // c0 ..
+        if ((int) *packet >= 192 && !jump) { // c0 ..
             // offset from https://gist.github.com/fffaraz/9d9170b57791c28ccda9255b48315168
-            int offset = (*packet)*256 + *(packet+1) - 49152; //49152 = 11000000 00000000
+            int offset = (*packet) * 256 + *(packet + 1) - 49152; //49152 = 11000000 00000000
             packet = start - prev + offset - 2;
             jump = true;
         }
@@ -322,9 +314,9 @@ string get_name(const u_char *packet, int prev) {
     }
 }
 
-void sigusr1_handler(int signum){
-    if (signum == SIGUSR1){
-        for(auto text: msg)
+void sigusr1_handler(int signum) {
+    if (signum == SIGUSR1) {
+        for (auto text: msg)
             cout << text << endl;
         exit(0);
     }
