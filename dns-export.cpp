@@ -91,14 +91,11 @@ int main(int argc, char **argv) {
     pcap_t *handle;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
-    struct ether_header *eptr;
     string r, i, tmp;
     int t = 60, c;
     const u_char *packet;
-    bool pr = false, pi = false, ps = false, pt = false;
-
+    bool pr = false, pi = false, ps = false;
     struct hostent *server;
-
     pid_t pid;
 
     while ((c = getopt(argc, argv, "r:i:s:t:")) != -1)
@@ -110,8 +107,6 @@ int main(int argc, char **argv) {
             case 'i':
                 pi = true;
                 i = optarg;
-                signal(SIGUSR1, sigusr_handler); // TODO check signal
-                signal(SIGUSR2, sigusr_handler);
                 break;
             case 's': // setup connection to syslog server on -s
                 if ((server = gethostbyname(optarg)) == nullptr) {
@@ -121,7 +116,6 @@ int main(int argc, char **argv) {
                 memset(&serv_addr, '0', sizeof(serv_addr));
                 serv_addr.sin_family = AF_INET;
                 bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr, (size_t)server->h_length);
-//                serv_addr.sin_addr.s_addr = inet_addr("192.168.56.102");
                 serv_addr.sin_port = htons(514);
                 if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) <= 0) {
                     cerr << "Socket creating failed" << endl;
@@ -131,7 +125,6 @@ int main(int argc, char **argv) {
                 break;
             case 't':
                 t = atoi(optarg);
-                pt = true;
                 break;
             case '?':
             default:
@@ -139,21 +132,17 @@ int main(int argc, char **argv) {
                 return 1;
         }
 
-    // it param -t used, run child process that kill parent after specified time
-    if (pt){
+    signal(SIGUSR1, sigusr_handler);
+    signal(SIGUSR2, sigusr_handler);
+
+    if (pi) {
+        // child that kill parent after specified time
         pid = fork();
-        if (pid == 0) { // child generator
+        if (pid == 0) {
             sleep(t);
             kill(getppid(), SIGUSR2);
             exit(0);
         }
-        else {
-
-        }
-
-    }
-
-    if (pi) {
         /* tutorial from http://www.tcpdump.org/pcap.html */
         struct bpf_program fp;
         char filter_exp[] = "udp port 53";
@@ -188,8 +177,9 @@ int main(int argc, char **argv) {
         pcap_close(handle);
     } else if (pr) {
         handle = pcap_open_offline(r.c_str(), errbuf);
-
+        int i = 0;
         while ((packet = pcap_next(handle, &header)) != NULL) {
+//            cout << i++ << endl;
             tmp = read_response(packet);
             if (tmp.size())
                 insert_message(tmp);
@@ -252,17 +242,18 @@ string read_response(const u_char *packet) {
                         }
                         ans_name = ans_name.substr(0, ans_name.size() - 1);
                         break;
+                    case 2: // ns
                     case 5: // cname
+                    case 6: // soa
                         ans_name += ' ' + get_name(packet + dns_pos, size_ip);
                         break;
                     case 28: // aaaa
                         ans_name += ' ' + get_ipv6(packet + dns_pos);
                         break;
-                    case 2: // ns
-                    case 6: // soa
                     case 15: // mx
                     case 16: // txt
                     case 99: // spf
+                        return "";
                     default:
                         return "";
                 }
@@ -307,7 +298,6 @@ string get_type(unsigned short num) {
 
 string get_ipv6(const u_char *packet) {
     string result;
-    bool pair = false;
     for (int i = 0; i < 16; i++) {
         string tmp;
         stringstream s;
@@ -337,7 +327,6 @@ string get_name(const u_char *packet, int prev) {
             res += *packet++;
         }
         if ((int) *packet >= 192 && !jump) { // c0 ..
-            // offset from https://gist.github.com/fffaraz/9d9170b57791c28ccda9255b48315168
             int offset = (*packet) * 256 + *(packet + 1) - 49152; //49152 = 11000000 00000000
             packet = start - prev + offset - 2;
             jump = true;
