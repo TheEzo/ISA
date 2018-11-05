@@ -8,6 +8,7 @@
 #include <netinet/ip6.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
+#include <net/if.h>
 #include <netinet/if_ether.h>
 #include <netinet/ether.h>
 #include <cstdlib>
@@ -19,13 +20,11 @@
 #include <cstring>
 #include <map>
 #include <algorithm>
-
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <syslog.h>
-#include <unistd.h>
 
 #define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
 
@@ -36,6 +35,8 @@ string get_name(const u_char *, const u_char *, int *);
 string get_type(unsigned short);
 
 string get_ipv6(const u_char *);
+
+string get_local_ip();
 
 void read_response(const u_char *);
 
@@ -88,10 +89,11 @@ struct sockaddr_in serv_addr;
 int socketfd;
 
 int main(int argc, char **argv) {
+    get_local_ip();
     pcap_t *handle;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
-    string r, i, tmp;
+    string r, i = "eth0", tmp;
     int t = 60, c;
     const u_char *packet;
     bool pr = false, pi = false, ps = false;
@@ -131,6 +133,10 @@ int main(int argc, char **argv) {
                 cerr << "Unknown parameter" << endl;
                 return 1;
         }
+    if (pi && pr){
+        cerr << "Cannot combine -i and -r" << endl;
+        return 1;
+    }
 
     signal(SIGUSR1, sigusr_handler);
     signal(SIGUSR2, sigusr_handler);
@@ -177,15 +183,15 @@ int main(int argc, char **argv) {
         pcap_close(handle);
     } else if (pr) {
         handle = pcap_open_offline(r.c_str(), errbuf);
-        int i = 0;
         while ((packet = pcap_next(handle, &header)) != NULL) {
             read_response(packet);
         }
     }
 
+    string msg;
     for (it = records.begin(); it != records.end(); it++) {
         if (ps) {
-            strcpy(buffer, (it->first + " " + to_string(it->second)).c_str());
+            strcpy(buffer, ("timestamp " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         } else {
             cout << it->first << " " << it->second << endl;
@@ -193,6 +199,17 @@ int main(int argc, char **argv) {
     }
 
     return 0;
+}
+
+string get_local_ip(){
+    char hostbuffer[256];
+    struct hostent *host_entry;
+    gethostname(hostbuffer, sizeof(hostbuffer));
+    host_entry = gethostbyname(hostbuffer);
+    string ip = inet_ntoa(*((struct in_addr *) host_entry->h_addr_list[0]));
+    if (ip.rfind("127", 0) == 0)
+        return host_entry->h_name;
+    return ip;
 }
 
 void read_response(const u_char *packet) {
@@ -397,7 +414,7 @@ void sigusr_handler(int signum) {
     }
     if (signum == SIGUSR2) {
         for (it = records.begin(); it != records.end(); it++) {
-            strcpy(buffer, (it->first + " " + to_string(it->second)).c_str());
+            strcpy(buffer, ("timestamp " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         }
         exit(0);
@@ -411,3 +428,5 @@ void insert_message(string msg) {
     } else
         it->second++;
 }
+
+//%FT%T
