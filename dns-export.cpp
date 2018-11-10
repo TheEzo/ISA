@@ -1,9 +1,17 @@
-#include <iostream>
-#include <unistd.h>
-#include <iostream>
-#include <pcap.h>
-#include <sstream>
-#include <vector>
+/*******************************
+ * ISA - project               *
+ * 2018/2019                   *
+ * Tomas Willaschek            *
+ * xwilla00                    *
+ *******************************/
+
+#include <arpa/inet.h>
+#include <algorithm>
+#include <cstring>
+#include <cerrno>
+#include <ctime>
+#include <cstdlib>
+#include <mutex>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <netinet/tcp.h>
@@ -11,95 +19,29 @@
 #include <net/if.h>
 #include <netinet/if_ether.h>
 #include <netinet/ether.h>
-#include <cstdlib>
-#include <cerrno>
-#include <arpa/inet.h>
-#include <ctime>
-#include <signal.h>
 #include <netdb.h>
-#include <cstring>
-#include <map>
-#include <algorithm>
+#include <pcap.h>
+#include <signal.h>
 #include <sys/socket.h>
-#include <unistd.h>
+#include <sstream>
 #include <sys/types.h>
-#include <netinet/in.h>
 #include <syslog.h>
+#include <unistd.h>
+#include <vector>
 
-#define SIZE_ETHERNET (14)       // offset of Ethernet header to L3 protocol
+#include "dns-export.h"
 
-using namespace std;
-
-string get_name(const u_char *, const u_char *, int *);
-
-string get_type(unsigned short);
-
-string get_ipv6(const u_char *);
-
-string get_local_ip();
-
-string get_timestamp();
-
-void read_response(const u_char *);
-
-void sigusr_handler(int);
-
-void mypcap_handler(u_char *, const struct pcap_pkthdr *, const u_char *);
-
-void insert_message(string);
-
-struct DNS_MESSAGE {
-    short id; // identification // short is 2 bytes long
-
-    // control - according to non-functional code and link 'bit numbering standarts' was each block of 8 bits reversed
-    // reason is still unknown, but it works
-    char rd : 1; // recursion desired
-    char tc : 1; // truncated
-    char aa : 1; // authorative answer
-    char opcode : 4; // request type
-    char qr : 1; // request/response
-
-    char rcode : 4; // error codes
-    char cd : 1; // checking disabled
-    char ad : 1; // authenticated data
-    char zeros : 1; // zeros
-    char ra : 1; // recursion available
-
-    // other fields
-    unsigned short question_count;
-    unsigned short answer_count;
-    unsigned short authority_count;
-    unsigned short additional_count;
-};
-
-struct QUESTION {
-    unsigned short type;
-    unsigned short cls;
-};
-
-struct ANSWER {
-    unsigned short type;
-    unsigned short cls;
-    unsigned int ttl;
-    unsigned short rdlength;
-};
-
-map<string, int> records;
-map<string, int> syslog_records;
-map<string, int>::iterator it;
-char buffer[1025];
-struct sockaddr_in serv_addr;
-int socketfd;
-
+/**
+ * Main process args and run online of offline packet processing
+ */
 int main(int argc, char **argv) {
-    get_local_ip();
     pcap_t *handle;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
-    string r, i = "eth0", tmp;
+    string r = nullptr, i = nullptr, tmp;
     int t = 60, c;
-    const u_char *packet;
-    bool pr = false, pi = false, ps = false;
+    const u_char *packet; // packet pointer
+    bool pr = false, pi = false, ps = false; // inserted parameters as booleans
     struct hostent *server;
     pid_t pid;
 
@@ -118,6 +60,8 @@ int main(int argc, char **argv) {
                     cerr << "Unknown syslog server" << endl;
                     return 1;
                 }
+
+                // setup syslog server
                 memset(&serv_addr, '0', sizeof(serv_addr));
                 serv_addr.sin_family = AF_INET;
                 bcopy((char *) server->h_addr, (char *) &serv_addr.sin_addr, (size_t) server->h_length);
@@ -142,7 +86,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGUSR1, sigusr_handler);
-    signal(SIGUSR2, sigusr_handler);
+    signal(SIGALRM, sigusr_handler);
 
     if (pi) {
         // child that kill parent after specified time
@@ -150,7 +94,7 @@ int main(int argc, char **argv) {
         if (pid == 0) {
             while(1){
                 sleep(t);
-                kill(getppid(), SIGUSR2);
+                kill(getppid(), SIGALRM);
             }
         }
         /* tutorial from http://www.tcpdump.org/pcap.html */
@@ -195,7 +139,7 @@ int main(int argc, char **argv) {
     string msg;
     for (it = records.begin(); it != records.end(); it++) {
         if (ps) {
-            strcpy(buffer, (get_timestamp() + " " + get_local_ip() + " <1> dns-export --- " + it->first + " " + to_string(it->second)).c_str());
+            strcpy(buffer, ("<1>1 " + get_timestamp() + " " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         } else {
             cout << it->first << " " << it->second << endl;
@@ -229,6 +173,7 @@ void read_response(const u_char *packet) {
     int len;
 
     switch (ntohs(eptr->ether_type)) {
+        // parse ethernet header + ip header
         case ETHERTYPE_IPV6:
             my_ip6 = (struct ip6_hdr *) (packet + SIZE_ETHERNET);
             size = 40;
@@ -272,8 +217,8 @@ void read_response(const u_char *packet) {
 
     dns_pos += name.length() + 2 + sizeof(struct QUESTION);
 
-
-    for (int i = 0; i < ntohs(dns->answer_count); i++) {
+    // read dns answer
+    for (int x = 0; x < ntohs(dns->answer_count); x++) {
         len = 0;
         string ans_name = get_name(packet + dns_pos, packet + size, &len);
         if (!ans_name.length())
@@ -284,7 +229,7 @@ void read_response(const u_char *packet) {
         ans_name += ' ' + get_type(ntohs(answer->type));
         switch (ntohs(answer->type)) {
             case 1: // a
-                ans_name += ' ';
+                ans_name += " ";
                 for (int j = 0; j < 4; j++) {
                     unsigned char a = *(packet + dns_pos + j);
                     ans_name += to_string((int) a) + '.';
@@ -296,30 +241,38 @@ void read_response(const u_char *packet) {
             case 6: // soa
             case 47: // nsec
                 len = ans_name.length();
-                ans_name += ' ' + get_name(packet + dns_pos, packet + size, &len);
+                ans_name += " " + get_name(packet + dns_pos, packet + size, &len);
                 if (len + 1 == ans_name.length())
                     return;
                 break;
             case 28: // aaaa
                 len = ans_name.length();
-                ans_name += ' ' + get_ipv6(packet + dns_pos);
+                ans_name += " " + get_ipv6(packet + dns_pos);
                 if (len + 1 == ans_name.length())
                     return;
                 break;
-            case 46: // rrsig
-                len = ans_name.length();
-                ans_name += ' ' + get_name(packet + dns_pos + 18, packet + size, &len);
-                if (len + 1 == ans_name.length())
-                    return;
-                break;
+//            case 46: // rrsig
+//                len = ans_name.length();
+//                ans_name += ' ' + get_name(packet + dns_pos + 18, packet + size, &len);
+//                if (len + 1 == ans_name.length())
+//                    return;
+//                break;
             case 15: // mx
                 len = ans_name.length();
-                ans_name += ' ' + get_name(packet + dns_pos + 2, packet + size, &len);
+                ans_name += " " + get_name(packet + dns_pos + 2, packet + size, &len);
                 if (len + 1 == ans_name.length())
                     return;
                 break;
             case 16: // txt
+                ans_name += " ";
+                len = (int)*(packet + dns_pos);
+                for(int j = 1; j <= len; j++)
+                    ans_name += *(packet + dns_pos + j);
+                break;
+            case 12: // ptr
+            case 43: // ds
             case 99: // spf
+            case 46:
             default:
                 ans_name = "";
                 break;
@@ -411,20 +364,25 @@ string get_name(const u_char *packet, const u_char *dns_start, int *len) {
 }
 
 void sigusr_handler(int signum) {
+    mutex m;
+    lock_guard<mutex> guard(m);
     if (signum == SIGUSR1) {
         for (it = records.begin(); it != records.end(); it++) {
             cout << it->first << " " << it->second << endl;
         }
     }
-    if (signum == SIGUSR2) {
+    else if (signum == SIGALRM) {
         for (it = syslog_records.begin(); it != syslog_records.end(); it++) {
             if (!it->second)
                 continue;
-            strcpy(buffer, ("timestamp " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
+            strcpy(buffer, ("<1>1 " + get_timestamp() + " " + get_local_ip() + " dns-export - - - " + it->first + " " + to_string(it->second)).c_str());
             it->second = 0;
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         }
     }
+    else
+        cout << "signal " << signum << endl;
+
 }
 
 void insert_message(string msg) {
@@ -456,5 +414,3 @@ string get_timestamp(){
     string res = tmbuf;
     return res + "." + ms.substr(0, 1) + "Z";
 }
-
-//%FT%T
