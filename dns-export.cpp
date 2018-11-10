@@ -38,6 +38,8 @@ string get_ipv6(const u_char *);
 
 string get_local_ip();
 
+string get_timestamp();
+
 void read_response(const u_char *);
 
 void sigusr_handler(int);
@@ -83,6 +85,7 @@ struct ANSWER {
 };
 
 map<string, int> records;
+map<string, int> syslog_records;
 map<string, int>::iterator it;
 char buffer[1025];
 struct sockaddr_in serv_addr;
@@ -145,9 +148,10 @@ int main(int argc, char **argv) {
         // child that kill parent after specified time
         pid = fork();
         if (pid == 0) {
-            sleep(t);
-            kill(getppid(), SIGUSR2);
-            exit(0);
+            while(1){
+                sleep(t);
+                kill(getppid(), SIGUSR2);
+            }
         }
         /* tutorial from http://www.tcpdump.org/pcap.html */
         struct bpf_program fp;
@@ -191,7 +195,7 @@ int main(int argc, char **argv) {
     string msg;
     for (it = records.begin(); it != records.end(); it++) {
         if (ps) {
-            strcpy(buffer, ("timestamp " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
+            strcpy(buffer, (get_timestamp() + " " + get_local_ip() + " <1> dns-export --- " + it->first + " " + to_string(it->second)).c_str());
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         } else {
             cout << it->first << " " << it->second << endl;
@@ -207,6 +211,7 @@ string get_local_ip(){
     gethostname(hostbuffer, sizeof(hostbuffer));
     host_entry = gethostbyname(hostbuffer);
     string ip = inet_ntoa(*((struct in_addr *) host_entry->h_addr_list[0]));
+
     if (ip.rfind("127", 0) == 0)
         return host_entry->h_name;
     return ip;
@@ -410,23 +415,46 @@ void sigusr_handler(int signum) {
         for (it = records.begin(); it != records.end(); it++) {
             cout << it->first << " " << it->second << endl;
         }
-        exit(0);
     }
     if (signum == SIGUSR2) {
-        for (it = records.begin(); it != records.end(); it++) {
+        for (it = syslog_records.begin(); it != syslog_records.end(); it++) {
+            if (!it->second)
+                continue;
             strcpy(buffer, ("timestamp " + get_local_ip() + " dns-export --- " + it->first + " " + to_string(it->second)).c_str());
+            it->second = 0;
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         }
-        exit(0);
     }
 }
 
 void insert_message(string msg) {
     it = records.find(msg);
-    if (it == records.end()) {
+    if (it == records.end())
         records.insert({msg, 1});
-    } else
+    else
         it->second++;
+
+    it = syslog_records.find(msg);
+    if(it == syslog_records.end())
+        syslog_records.insert({msg, 1});
+    else
+        it->second++;
+}
+
+string get_timestamp(){
+    struct timeval tv;
+    time_t nowtime;
+    struct tm *nowtm;
+    char tmbuf[64];
+
+    gettimeofday(&tv, NULL);
+    string ms = to_string((tv.tv_sec) * 1000 + (tv.tv_usec) / 1000);
+    ms = ms.substr(ms.size()-3, ms.size());
+    nowtime = tv.tv_sec;
+    nowtm = localtime(&nowtime);
+    strftime(tmbuf, sizeof tmbuf, "%Y-%m-%dT%H:%M:%S", nowtm);
+    string res = tmbuf;
+    return res + "." + ms.substr(0, 1) + "Z";
 }
 
 //%FT%T
