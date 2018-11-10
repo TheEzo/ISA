@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     pcap_t *handle;
     char errbuf[PCAP_ERRBUF_SIZE];
     struct pcap_pkthdr header;
-    string r = nullptr, i = nullptr, tmp;
+    string r, i, tmp;
     int t = 60, c;
     const u_char *packet; // packet pointer
     bool pr = false, pi = false, ps = false; // inserted parameters as booleans
@@ -371,7 +371,7 @@ void sigusr_handler(int signum) {
             cout << it->first << " " << it->second << endl;
         }
     }
-    else if (signum == SIGALRM) {
+    else if (signum == SIGALRM && socketfd > 0) {
         for (it = syslog_records.begin(); it != syslog_records.end(); it++) {
             if (!it->second)
                 continue;
@@ -380,8 +380,6 @@ void sigusr_handler(int signum) {
             sendto(socketfd, buffer, strlen(buffer), 0, (struct sockaddr *) &serv_addr, sizeof(struct sockaddr_in));
         }
     }
-    else
-        cout << "signal " << signum << endl;
 
 }
 

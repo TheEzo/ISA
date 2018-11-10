@@ -1,0 +1,37 @@
+DNS-EXPORT	 	Linux Programmer's Manual		 DNS-EXPORT
+
+NAME
+	dns-export - read input file or sniff on interface and sends results to stdout or syslog server
+
+SYNOPSIS 
+	dns-export [-r file.pcap] [-i interface] [-s syslog-server] [-t seconds]
+
+DESCRIPTION
+	Program sniff DNS packets on selected interface or reads pcap file. Loaded data printed to stdout or sent to syslog server.
+
+EXAMPLES
+	dns-export -r file.pcap
+	    Reads file and sends data to stdout.
+
+	dns-export -r file.pcap -s localhost
+	    Reads file and sends data to syslog server.
+
+	dns-export -i eth0
+	    Sniff on interface eth0 and sends data to stdout on signal SIGUSR1.
+	
+	dns-export -i eth0 -s localhost
+	    Sniff on interface eth0, sends data to stdout on signal SIGUSR1 and sends data captured after previous logging to syslog server each 60 seconds.
+	
+OPTIONS
+	-i interface
+	    Interface that should be watched.
+	
+	-s syslog-server
+	    Syslog server where data will be sent.
+
+	-t seconds
+	    Timeout for sending syslog messages.
+
+	-r file.pcap
+	    File containing DNS information to parse.
+	

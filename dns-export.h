@@ -148,6 +148,6 @@ struct sockaddr_in serv_addr;
 /**
  * Syslog server file descriptor
  */
-int socketfd;
+int socketfd = 0;
 
 #endif //ISA_DNS_EXPORT_H

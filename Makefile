@@ -3,10 +3,10 @@
 # Login: xwilla00
 # Project: ISA - dns export
 
-ARCHIVE=xwilla00.tgz
+ARCHIVE=xwilla00.tar
 PROJ=dns-export
 SRC=dns-export.cpp
-MORE=Makefile
+MORE=Makefile dns-export.h manual.pdf
 LIB=-lpcap
 
 default:
